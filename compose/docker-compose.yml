@@ -1,0 +1,60 @@
+# FoldForge MVP runtime stack — runs on the Hetzner app node.
+# Images are built/pushed by each service repo's CI; tags pinned via .env.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-foldforge}
+    volumes:
+      - /mnt/pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator:
+    image: ghcr.io/foldforge/orchestrator:${ORCHESTRATOR_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
+      FOLDFORGE_ORCH__SIDECAR_RFDIFFUSION: ${SIDECAR_RFDIFFUSION:-http://127.0.0.1:50061}
+      FOLDFORGE_ORCH__SIDECAR_PROTEINMPNN: ${SIDECAR_PROTEINMPNN:-http://127.0.0.1:50062}
+      FOLDFORGE_ORCH__SIDECAR_BOLTZ: ${SIDECAR_BOLTZ:-http://127.0.0.1:50063}
+      FOLDFORGE_ORCH__SIDECAR_AF2: ${SIDECAR_AF2:-http://127.0.0.1:50064}
+
+  gateway:
+    image: ghcr.io/foldforge/gateway:${GATEWAY_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    environment:
+      FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
+      FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
+      FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+    ports:
+      - "8080:8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

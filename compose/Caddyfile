@@ -1,0 +1,4 @@
+# Automatic HTTPS in front of the gateway.
+{$FOLDFORGE_DOMAIN:api.foldforge.io} {
+	reverse_proxy gateway:8080
+}

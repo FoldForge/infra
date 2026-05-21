@@ -1,0 +1,14 @@
+#cloud-config
+# Provisions the app node: mounts the Postgres volume and lays down the compose
+# stack. The actual deploy (docker compose up) is driven by scripts/deploy.sh
+# from CI / operator, not baked into the image.
+package_update: true
+write_files:
+  - path: /opt/foldforge/README
+    content: |
+      FoldForge app node. Deploy with scripts/deploy.sh from the infra repo.
+      Postgres data volume mounts at /mnt/pg-data.
+runcmd:
+  - mkdir -p /opt/foldforge /mnt/pg-data
+  - systemctl enable docker
+  - systemctl start docker

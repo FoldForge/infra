@@ -1,0 +1,12 @@
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+backend.hcl
+!backend.hcl.example
+crash.log
+# compose secrets
+compose/.env
+.DS_Store

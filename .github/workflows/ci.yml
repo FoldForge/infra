@@ -1,0 +1,25 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      - name: fmt
+        run: terraform -chdir=terraform fmt -check -recursive
+      - name: validate
+        # init without backend so validate works without cloud creds
+        run: |
+          terraform -chdir=terraform init -backend=false
+          terraform -chdir=terraform validate
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: validate compose
+        run: |
+          cp compose/.env.example compose/.env
+          docker compose -f compose/docker-compose.yml config -q

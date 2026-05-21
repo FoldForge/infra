@@ -1,0 +1,5 @@
+# terraform init -backend-config=backend.hcl
+# R2 S3-compatible endpoint: https://<account_id>.r2.cloudflarestorage.com
+endpoint   = "https://REPLACE_ACCOUNT_ID.r2.cloudflarestorage.com"
+access_key = "REPLACE_R2_ACCESS_KEY_ID"
+secret_key = "REPLACE_R2_SECRET_ACCESS_KEY"
