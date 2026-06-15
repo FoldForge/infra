@@ -1,0 +1,23 @@
+# OpenTelemetry tracing overlay (DEBT #M5, optional).
+#
+# Layer this on top of the main stack to get a span-waterfall UI:
+#   docker compose -f docker-compose.yml -f docker-compose.trace.yml up -d
+#
+# This brings up an all-in-one Jaeger (collector + UI). FoldForge services
+# already propagate the W3C `traceparent` and log the trace-id end to end; to
+# populate the waterfall, each service must additionally EXPORT OTLP spans to
+# this collector (OpenTelemetry SDK exporter — deferred to an online build, see
+# infra/TRACE-DEPLOY.md). Once wired, point services at:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+services:
+  otel-collector:
+    # Jaeger all-in-one accepts OTLP directly and serves its own UI, so a single
+    # container gives both the collector endpoint and the trace viewer.
+    image: jaegertracing/all-in-one:1.60
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
