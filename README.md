@@ -50,6 +50,11 @@ cp compose/.env.example compose/.env           # fill secrets + image tags
 `ORCHESTRATOR_TAG`) — bump them to roll forward.
 
 ## Notes
+- An **optional distributed-tracing overlay** lives at
+  `compose/docker-compose.trace.yml` (an OpenTelemetry collector + Jaeger
+  all-in-one). The services already propagate a W3C `traceparent` end to end
+  (#M5); this overlay is the export sink. See [`TRACE-DEPLOY.md`](TRACE-DEPLOY.md)
+  for the runbook (it's gated on the per-service OTLP exporter, which is deferred).
 - GPU sidecars are **not** provisioned by Terraform in the MVP; rent GPU hosts
   separately and set `SIDECAR_*` endpoints in `compose/.env`.
 - Postgres runs as a container on a Hetzner volume for the MVP. Swap for a
