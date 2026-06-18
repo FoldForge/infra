@@ -1,0 +1,78 @@
+# FoldForge control-plane stack for a SHARED host (e.g. the AWS EC2 box that already
+# runs other compose projects). Differs from docker-compose.yml (the Hetzner app-node
+# stack) in three deliberate ways, to coexist with whatever else is on the host:
+#
+#   1. Images are BUILT from sibling repos (no GHCR pull / no registry creds needed).
+#      Expected layout (clone with --recurse-submodules for the two Rust repos):
+#         /root/git/foldforge-orchestrator   (has ./proto submodule)
+#         /root/git/foldforge-gateway        (has ./proto submodule)
+#         /root/git/foldforge-infra          (this file lives here)
+#   2. NO caddy — ports 80/443 are already taken on a shared host. The gateway is
+#      published on a high port (GATEWAY_HOST_PORT, default 18080) instead. Put TLS
+#      in front later (reuse the host's existing caddy, or an ALB) if you expose it.
+#   3. postgres does NOT publish 5432 to the host (another postgres may own it). It is
+#      reachable only on the compose-internal network as `postgres:5432`.
+#
+# Orchestrator runs the GPU-FREE mock runner, so the whole control plane comes up and
+# the API works end-to-end with NO GPU and NO object store. Swap RUNNER + add the
+# sidecar endpoints + R2/S3 creds when real inference is wired.
+#
+# Usage (matches this host's convention — compose is available under sudo):
+#   cd /root/git/foldforge-infra/compose
+#   cp ec2.env.example .env        # set POSTGRES_PASSWORD + API_TOKEN
+#   sudo docker compose -f docker-compose.ec2.yml --env-file .env up -d --build
+#   curl localhost:${GATEWAY_HOST_PORT:-18080}/v1/healthz
+
+name: foldforge
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-foldforge}
+    volumes:
+      - foldforge_pg:/var/lib/postgresql/data
+    # NOTE: no `ports:` — internal-only, so it can't collide with a host 5432.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  orchestrator:
+    build:
+      context: ../../foldforge-orchestrator
+      dockerfile: Dockerfile
+    image: foldforge/orchestrator:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
+      # GPU-free mock runner: the full DAG executes deterministically, no sidecars.
+      FOLDFORGE_ORCH__RUNNER: mock
+    # No host port — gateway reaches it as orchestrator:50051 on the compose network.
+
+  gateway:
+    build:
+      context: ../../foldforge-gateway
+      dockerfile: Dockerfile
+    image: foldforge/gateway:local
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    environment:
+      FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
+      FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
+      FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+    ports:
+      # Host:Container — high host port to avoid 80/443/8080 collisions.
+      - "${GATEWAY_HOST_PORT:-18080}:8080"
+
+volumes:
+  foldforge_pg:
