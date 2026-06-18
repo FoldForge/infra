@@ -3,13 +3,15 @@
 # stack) in three deliberate ways, to coexist with whatever else is on the host:
 #
 #   1. Images are BUILT from sibling repos (no GHCR pull / no registry creds needed).
-#      Expected layout (clone with --recurse-submodules for the two Rust repos):
-#         /root/git/foldforge-orchestrator   (has ./proto submodule)
-#         /root/git/foldforge-gateway        (has ./proto submodule)
-#         /root/git/foldforge-infra          (this file lives here)
+#      Expected sibling layout (clone with --recurse-submodules for the Rust repos):
+#         <root>/orchestrator   (has ./proto submodule)
+#         <root>/gateway        (has ./proto submodule)
+#         <root>/console
+#         <root>/infra          (this file lives here)
 #   2. NO caddy — ports 80/443 are already taken on a shared host. The gateway is
-#      published on a high port (GATEWAY_HOST_PORT, default 18080) instead. Put TLS
-#      in front later (reuse the host's existing caddy, or an ALB) if you expose it.
+#      published on a high port (GATEWAY_HOST_PORT, default 18080) and the console on
+#      CONSOLE_HOST_PORT (default 13000). Reach them via SSH tunnel, or open the port
+#      in the security group + put TLS in front later.
 #   3. postgres does NOT publish 5432 to the host (another postgres may own it). It is
 #      reachable only on the compose-internal network as `postgres:5432`.
 #
@@ -44,7 +46,7 @@ services:
 
   orchestrator:
     build:
-      context: ../../foldforge-orchestrator
+      context: ../../orchestrator
       dockerfile: Dockerfile
     image: foldforge/orchestrator:local
     restart: unless-stopped
@@ -60,7 +62,7 @@ services:
 
   gateway:
     build:
-      context: ../../foldforge-gateway
+      context: ../../gateway
       dockerfile: Dockerfile
     image: foldforge/gateway:local
     restart: unless-stopped
@@ -73,6 +75,24 @@ services:
     ports:
       # Host:Container — high host port to avoid 80/443/8080 collisions.
       - "${GATEWAY_HOST_PORT:-18080}:8080"
+
+  console:
+    build:
+      context: ../../console
+      dockerfile: Dockerfile
+    image: foldforge/console:local
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      # The console's server-side proxy reaches the gateway over the compose
+      # network (NOT the host's published port). Token is injected server-side,
+      # never sent to the browser.
+      NEXT_PUBLIC_GATEWAY_URL: http://gateway:8080
+      GATEWAY_API_TOKEN: ${API_TOKEN:?set in .env}
+    ports:
+      # High host port to avoid collisions; reach it via an SSH tunnel.
+      - "${CONSOLE_HOST_PORT:-13000}:3000"
 
 volumes:
   foldforge_pg:
