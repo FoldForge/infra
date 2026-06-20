@@ -2,12 +2,16 @@
 # runs other compose projects). Differs from docker-compose.yml (the Hetzner app-node
 # stack) in three deliberate ways, to coexist with whatever else is on the host:
 #
-#   1. Images are BUILT from sibling repos (no GHCR pull / no registry creds needed).
-#      Expected sibling layout (clone with --recurse-submodules for the Rust repos):
+#   1. Images come from GHCR by default (pushed by each repo's CI on main), so a
+#      deploy is `pull` + `up` — no on-host compile. Each service ALSO has a `build:`
+#      fallback from its sibling repo, so `up --build` still works offline / for local
+#      changes (clone with --recurse-submodules for the Rust repos):
 #         <root>/orchestrator   (has ./proto submodule)
 #         <root>/gateway        (has ./proto submodule)
 #         <root>/console
 #         <root>/infra          (this file lives here)
+#      Pin a specific build with ORCHESTRATOR_TAG / GATEWAY_TAG / CONSOLE_TAG
+#      (default: latest); CI also tags each image sha-<full-commit> for immutability.
 #   2. NO caddy — ports 80/443 are already taken on a shared host. The gateway is
 #      published on a high port (GATEWAY_HOST_PORT, default 18080) and the console on
 #      CONSOLE_HOST_PORT (default 13000). Reach them via SSH tunnel, or open the port
@@ -19,9 +23,14 @@
 # the API works end-to-end with NO GPU and NO object store. Swap RUNNER + add the
 # sidecar endpoints + R2/S3 creds when real inference is wired.
 #
-# Usage (matches this host's convention — compose is available under sudo):
-#   cd /root/git/foldforge-infra/compose
+# Usage (compose is available under sudo on this host):
+#   cd <root>/infra/compose
 #   cp ec2.env.example .env        # set POSTGRES_PASSWORD + API_TOKEN
+#   # Pull mode (default, fast — images from GHCR; needs `docker login ghcr.io`
+#   # if the packages are private):
+#   sudo docker compose -f docker-compose.ec2.yml --env-file .env pull
+#   sudo docker compose -f docker-compose.ec2.yml --env-file .env up -d
+#   # Build mode (offline / local changes):
 #   sudo docker compose -f docker-compose.ec2.yml --env-file .env up -d --build
 #   curl localhost:${GATEWAY_HOST_PORT:-18080}/v1/healthz
 
@@ -45,10 +54,10 @@ services:
       retries: 5
 
   orchestrator:
+    image: ghcr.io/foldforge/orchestrator:${ORCHESTRATOR_TAG:-latest}
     build:
       context: ../../orchestrator
       dockerfile: Dockerfile
-    image: foldforge/orchestrator:local
     restart: unless-stopped
     depends_on:
       postgres:
@@ -61,10 +70,10 @@ services:
     # No host port — gateway reaches it as orchestrator:50051 on the compose network.
 
   gateway:
+    image: ghcr.io/foldforge/gateway:${GATEWAY_TAG:-latest}
     build:
       context: ../../gateway
       dockerfile: Dockerfile
-    image: foldforge/gateway:local
     restart: unless-stopped
     depends_on:
       - orchestrator
@@ -77,10 +86,10 @@ services:
       - "${GATEWAY_HOST_PORT:-18080}:8080"
 
   console:
+    image: ghcr.io/foldforge/console:${CONSOLE_TAG:-latest}
     build:
       context: ../../console
       dockerfile: Dockerfile
-    image: foldforge/console:local
     restart: unless-stopped
     depends_on:
       - gateway
