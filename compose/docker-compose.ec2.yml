@@ -53,6 +53,42 @@ services:
       timeout: 5s
       retries: 5
 
+  # Object store for synthetic mock artifacts (so the console 3D viewer + download
+  # work with no GPU). Internal-only — no host port, reached as minio:9000 on the
+  # compose network, so it can't collide with anything on the host.
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - foldforge_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: create the bucket the gateway serves + the mock runner uploads to.
+  # Idempotent; exits 0 once the bucket exists. No app-code bucket management.
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >-
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/$${R2_BUCKET:-foldforge} &&
+      echo 'bucket ready'"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+      R2_BUCKET: ${R2_BUCKET:-foldforge}
+    restart: "no"
+
   orchestrator:
     image: ghcr.io/foldforge/orchestrator:${ORCHESTRATOR_TAG:-latest}
     build:
@@ -62,11 +98,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     environment:
-      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:***@postgres:5432/${POSTGRES_DB:-foldforge}
       FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
       # GPU-free mock runner: the full DAG executes deterministically, no sidecars.
       FOLDFORGE_ORCH__RUNNER: mock
+      # Object store for synthetic artifact uploads (so the console viewer works).
+      # Same creds/bucket the gateway reads — one .env configures both.
+      FOLDFORGE_ORCH__R2_ENDPOINT: http://minio:9000
+      FOLDFORGE_ORCH__R2_REGION: ${R2_REGION:-auto}
+      FOLDFORGE_ORCH__R2_BUCKET: ${R2_BUCKET:-foldforge}
+      FOLDFORGE_ORCH__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      FOLDFORGE_ORCH__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
     # No host port — gateway reaches it as orchestrator:50051 on the compose network.
 
   gateway:
@@ -81,6 +126,13 @@ services:
       FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
       FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
       FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+      # Object store the artifact-download endpoint signs + streams from. Same
+      # MinIO the orchestrator's mock runner uploads to — one .env, both services.
+      FOLDFORGE_GATEWAY__R2_ENDPOINT: http://minio:9000
+      FOLDFORGE_GATEWAY__R2_REGION: ${R2_REGION:-auto}
+      FOLDFORGE_GATEWAY__R2_BUCKET: ${R2_BUCKET:-foldforge}
+      FOLDFORGE_GATEWAY__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      FOLDFORGE_GATEWAY__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
     ports:
       # Host:Container — high host port to avoid 80/443/8080 collisions.
       - "${GATEWAY_HOST_PORT:-18080}:8080"
@@ -105,3 +157,4 @@ services:
 
 volumes:
   foldforge_pg:
+  foldforge_minio:
