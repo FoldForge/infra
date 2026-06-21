@@ -101,7 +101,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     environment:
-      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:***@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
       FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
       # GPU-free mock runner: the full DAG executes deterministically, no sidecars.
       FOLDFORGE_ORCH__RUNNER: mock
