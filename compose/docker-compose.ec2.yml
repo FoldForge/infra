@@ -131,6 +131,9 @@ services:
       FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
       FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
       FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+      # Per-user API keys + quotas. Required for billing (a per-tenant principal comes
+      # from a per-user key; the static admin token has no principal and is unbilled).
+      FOLDFORGE_GATEWAY__API_KEYS_ENABLED: ${API_KEYS_ENABLED:-false}
       # Object store the artifact-download endpoint signs + streams from. Same
       # MinIO the orchestrator's mock runner uploads to — one .env, both services.
       FOLDFORGE_GATEWAY__R2_ENDPOINT: http://minio:9000
