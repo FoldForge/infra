@@ -112,6 +112,11 @@ services:
       FOLDFORGE_ORCH__R2_BUCKET: ${R2_BUCKET:-foldforge}
       FOLDFORGE_ORCH__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
       FOLDFORGE_ORCH__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+      # Billing (BILLING-plan): dark-launched OFF by default; set BILLING_ENABLED=true
+      # in .env to charge submits. price_per_step is a placeholder until GPU-seconds
+      # are measured (clamped [0, 1e6] at load).
+      FOLDFORGE_ORCH__BILLING_ENABLED: ${BILLING_ENABLED:-false}
+      FOLDFORGE_ORCH__PRICE_PER_STEP: ${PRICE_PER_STEP:-10}
     # No host port — gateway reaches it as orchestrator:50051 on the compose network.
 
   gateway:
