@@ -36,9 +36,14 @@ You:
 1. Create a RunPod account + add credit (~$10 covers many test sessions).
 2. Build + push the sidecar GPU image to a registry RunPod can pull (GHCR works; the
    image can stay private — give RunPod a read token, same as the EC2 GHCR login).
-   Either build on a RunPod Pod (`docker build -f Dockerfile.gpu`) and push, or build
-   on any GPU/CUDA box. (First build will iterate on the version pins — see each
-   `Dockerfile.gpu`'s STATUS note.)
+   Use the helper (run it ON a GPU/CUDA box — a RunPod Pod, an AWS g5, any CUDA host
+   with Docker; log in to GHCR first, the script never handles your token):
+   ```bash
+   echo "$GHCR_PAT" | docker login ghcr.io -u <you> --password-stdin
+   infra/scripts/build-gpu-sidecar.sh af2          # one model (recommended first)
+   # infra/scripts/build-gpu-sidecar.sh all        # or all four
+   ```
+   (First build will iterate on the version pins — see each `Dockerfile.gpu`'s STATUS.)
 3. Deploy a Pod from that image (next section) and give me its SSH connection string.
 
 ## 1. Deploy the Pod (RunPod console)
