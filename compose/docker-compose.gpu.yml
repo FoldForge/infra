@@ -1,5 +1,9 @@
 # FoldForge — GPU deployment stack (REAL inference).
 #
+# FOR A COMPOSE-CAPABLE GPU HOST (a normal GPU VM: AWS g5, Lambda, a bare-metal box).
+# NOT for RunPod Pods — RunPod does NOT support Docker Compose; for RunPod use the
+# mode-A split (GPU sidecar on RunPod + control plane on EC2) in docs/RUNPOD-DEPLOY.md.
+#
 # This is the docker-compose.ec2.yml mock stack PLUS the four real GPU sidecars.
 # The orchestrator switches from the MockRunner to the real GrpcRunner (by NOT
 # setting FOLDFORGE_ORCH__RUNNER=mock) and points at the four sidecars by service
