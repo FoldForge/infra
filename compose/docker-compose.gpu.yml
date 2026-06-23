@@ -1,0 +1,170 @@
+# FoldForge — GPU deployment stack (REAL inference).
+#
+# This is the docker-compose.ec2.yml mock stack PLUS the four real GPU sidecars.
+# The orchestrator switches from the MockRunner to the real GrpcRunner (by NOT
+# setting FOLDFORGE_ORCH__RUNNER=mock) and points at the four sidecars by service
+# name; each sidecar runs its Dockerfile.gpu image with FOLDFORGE_SIDECAR_MOCK=0.
+#
+# REQUIREMENTS on the host:
+#   - NVIDIA GPU + driver + NVIDIA Container Toolkit (so `deploy.resources.reservations
+#     .devices` / `runtime: nvidia` works).
+#   - The four sidecar GPU images built on the box (see each repo's Dockerfile.gpu +
+#     docs/GPU-DEPLOY.md). Model weights per sidecar (RFdiffusion weights download,
+#     ProteinMPNN bundled, Boltz first-run cache, AF2/ColabFold first-run cache).
+#   - The same .env as the mock stack (Postgres + MinIO creds + API_TOKEN), plus any
+#     R2/object-store creds if using R2 instead of the bundled MinIO.
+#
+# STATUS: assembled from each sidecar's verified GPU-free wiring + GPU-DEPLOY runbook.
+# NOT yet brought up on a real GPU box end-to-end — the single remaining critical-path
+# milestone (STRATEGY §2). Bring up incrementally: one sidecar at a time, confirm
+# GetCapabilities reports `*-real`, then a single-step workflow, before the full DAG.
+#
+# Usage (on the GPU box):
+#   docker compose -f docker-compose.gpu.yml --env-file .env up -d
+#   # watch one sidecar reach readiness, then submit an rfdiffusion-only workflow.
+
+x-sidecar-gpu: &sidecar-gpu
+  restart: unless-stopped
+  # NVIDIA runtime: expose all GPUs to the sidecar. Requires the NVIDIA Container
+  # Toolkit on the host. (Equivalent to `--gpus all`.)
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  environment: &sidecar-env
+    FOLDFORGE_SIDECAR_MOCK: "0"           # REAL inference
+    # Object store: the sidecars read/write artifacts here (ProteinMPNN REQUIRES it
+    # to fetch its input backbone; others use it for durable artifact upload).
+    FOLDFORGE_R2_ENDPOINT: http://minio:9000
+    FOLDFORGE_R2_BUCKET: ${R2_BUCKET:-foldforge}
+    AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+    AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-foldforge}
+    volumes:
+      - foldforge_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - foldforge_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/$${R2_BUCKET:-foldforge} &&
+      echo 'bucket ready'"
+
+  # --- Real GPU sidecars ------------------------------------------------------
+  sidecar-rfdiffusion:
+    <<: *sidecar-gpu
+    image: ghcr.io/foldforge/sidecar-rfdiffusion:gpu
+    environment:
+      <<: *sidecar-env
+      FOLDFORGE_SIDECAR__BIND_ADDR: 0.0.0.0:50061
+
+  sidecar-proteinmpnn:
+    <<: *sidecar-gpu
+    image: ghcr.io/foldforge/sidecar-proteinmpnn:gpu
+    environment:
+      <<: *sidecar-env
+      FOLDFORGE_SIDECAR__BIND_ADDR: 0.0.0.0:50062
+
+  sidecar-boltz:
+    <<: *sidecar-gpu
+    image: ghcr.io/foldforge/sidecar-boltz:gpu
+    environment:
+      <<: *sidecar-env
+      FOLDFORGE_SIDECAR__BIND_ADDR: 0.0.0.0:50063
+
+  sidecar-af2:
+    <<: *sidecar-gpu
+    image: ghcr.io/foldforge/sidecar-af2:gpu
+    environment:
+      <<: *sidecar-env
+      FOLDFORGE_SIDECAR__BIND_ADDR: 0.0.0.0:50064
+
+  # --- Control plane ----------------------------------------------------------
+  orchestrator:
+    image: ghcr.io/foldforge/orchestrator:${ORCHESTRATOR_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
+      # NO FOLDFORGE_ORCH__RUNNER=mock here → the real GrpcRunner is used, dispatching
+      # to the four sidecars below by service name.
+      FOLDFORGE_ORCH__SIDECAR_RFDIFFUSION: http://sidecar-rfdiffusion:50061
+      FOLDFORGE_ORCH__SIDECAR_PROTEINMPNN: http://sidecar-proteinmpnn:50062
+      FOLDFORGE_ORCH__SIDECAR_BOLTZ: http://sidecar-boltz:50063
+      FOLDFORGE_ORCH__SIDECAR_AF2: http://sidecar-af2:50064
+      # Billing (off by default; same knobs as the mock stack).
+      FOLDFORGE_ORCH__BILLING_ENABLED: ${BILLING_ENABLED:-false}
+      FOLDFORGE_ORCH__PRICE_PER_STEP: ${PRICE_PER_STEP:-10}
+
+  gateway:
+    image: ghcr.io/foldforge/gateway:${GATEWAY_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    environment:
+      FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
+      FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
+      FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+      FOLDFORGE_GATEWAY__API_KEYS_ENABLED: ${API_KEYS_ENABLED:-false}
+      FOLDFORGE_GATEWAY__R2_ENDPOINT: http://minio:9000
+      FOLDFORGE_GATEWAY__R2_REGION: ${R2_REGION:-auto}
+      FOLDFORGE_GATEWAY__R2_BUCKET: ${R2_BUCKET:-foldforge}
+      FOLDFORGE_GATEWAY__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      FOLDFORGE_GATEWAY__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+    ports:
+      - "${GATEWAY_HOST_PORT:-18080}:8080"
+
+  console:
+    image: ghcr.io/foldforge/console:${CONSOLE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: http://gateway:8080
+      GATEWAY_API_TOKEN: ${API_TOKEN:?set in .env}
+    ports:
+      - "${CONSOLE_HOST_PORT:-13000}:3000"
+
+volumes:
+  foldforge_pg:
+  foldforge_minio:
