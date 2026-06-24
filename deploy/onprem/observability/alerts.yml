@@ -1,0 +1,77 @@
+# Prometheus alert rules for FoldForge on-prem (Tier 2.1).
+#
+# References ONLY metrics the services actually expose (verified against
+# orchestrator/src/metrics.rs + gateway/src/metrics.rs):
+#   foldforge_workflows_total{state}                  (orchestrator)
+#   foldforge_steps_total{tool,outcome}               (orchestrator)
+#   foldforge_workflow_duration_seconds (histogram)   (orchestrator)
+#   foldforge_steps_in_flight (gauge)                 (orchestrator)
+#   foldforge_gateway_http_requests_total{method,path,status}        (gateway)
+#   foldforge_gateway_http_request_duration_seconds (histogram)      (gateway)
+#
+# Scrape the orchestrator metrics port (default :9090) and the gateway (/metrics on
+# :8080). Thresholds below are STARTING points — tune per deployment (see comments).
+groups:
+  - name: foldforge
+    rules:
+      - alert: FoldForgeGatewayDown
+        expr: up{job="foldforge-gateway"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Gateway target is down"
+          description: "Prometheus can't scrape the gateway for 2m — API is likely unreachable."
+
+      - alert: FoldForgeOrchestratorDown
+        expr: up{job="foldforge-orchestrator"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Orchestrator target is down"
+          description: "No scrape for 2m — no workflows will progress."
+
+      # 5xx rate over total requests. Too high a threshold hides a real outage; too low
+      # (e.g. 1%) pages on normal sporadic errors. 5% over 10m is a reasonable start.
+      - alert: FoldForgeHighGateway5xx
+        expr: |
+          sum(rate(foldforge_gateway_http_requests_total{status=~"5.."}[10m]))
+            / clamp_min(sum(rate(foldforge_gateway_http_requests_total[10m])), 1) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Gateway 5xx rate >5% (10m)"
+          description: "Elevated server errors — check gateway + orchestrator logs."
+
+      # Workflow failure ratio. Some failures are normal (bad inputs); a sustained high
+      # ratio signals a systemic problem (sidecar/GPU/store). 30% over 30m to start.
+      - alert: FoldForgeHighWorkflowFailureRate
+        expr: |
+          sum(rate(foldforge_workflows_total{state="FAILED"}[30m]))
+            / clamp_min(sum(rate(foldforge_workflows_total[30m])), 1) > 0.30
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "Workflow failure ratio >30% (30m)"
+          description: "Many workflows failing — inspect sidecar/GPU/object-store health."
+
+      # Steps stuck in flight with nothing completing → a wedged sidecar / GPU stall.
+      # Too low pages on healthy long folds; pair the gauge with a no-progress window.
+      - alert: FoldForgeStepsInFlightStalled
+        expr: |
+          foldforge_steps_in_flight > 0
+            and rate(foldforge_steps_total[15m]) == 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Steps in flight but none completing (15m)"
+          description: "A sidecar/GPU may be wedged — no step has reached a terminal outcome in 15m while work is dispatched."
+
+      # p95 gateway latency. Tune the threshold to the deployment's SLO; 2s is a generic start.
+      - alert: FoldForgeGatewayLatencyP95High
+        expr: |
+          histogram_quantile(0.95, sum(rate(foldforge_gateway_http_request_duration_seconds_bucket[10m])) by (le)) > 2
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Gateway p95 latency >2s (10m)"
+          description: "API latency degraded — check load, DB, orchestrator."
