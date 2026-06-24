@@ -89,9 +89,11 @@ object store if they swap MinIO for S3/their store. (Formalize in a SUPPORT.md �
 PRIVATE-DEPLOY-GAP.md Tier 1.3.)
 
 ## Not yet (gaps before this is a polished product)
-- **License/entitlement:** none yet. Under model B the images live in the customer's
-  Harbor beyond your control, so a signed-license-key check in-code is required to gate
-  usage/renewal (PRIVATE-DEPLOY-GAP.md Tier 1.1) — build this before charging.
+- **License/entitlement:** ✅ DONE — the orchestrator verifies a signed Ed25519 license
+  offline (`LICENSE_ENFORCED=true` + `LICENSE_KEY`); invalid/expired refuses to start
+  without touching data. Vendor issues keys via `orchestrator/examples/sign-license`
+  (see infra/docs/LICENSE-OPS.md). Remaining: `max_workflows` cap enforcement (expiry is
+  enforced today).
 - **Versioned releases:** repos have 0 tags today; CI must build `:vX.Y.Z` images for
   any of the above to be real (Tier 0.2).
 - **Real inference:** still GPU-gated; the platform's core value is unproven until one

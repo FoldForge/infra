@@ -81,6 +81,10 @@ services:
       FOLDFORGE_ORCH__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
       FOLDFORGE_ORCH__BILLING_ENABLED: ${BILLING_ENABLED:-false}
       FOLDFORGE_ORCH__PRICE_PER_STEP: ${PRICE_PER_STEP:-10}
+      # On-prem license (delivery model B). Enforced on customer installs; a valid
+      # signed key is required to start. See infra/docs/LICENSE-OPS.md.
+      FOLDFORGE_ORCH__LICENSE_ENFORCED: ${LICENSE_ENFORCED:-true}
+      FOLDFORGE_ORCH__LICENSE_KEY: ${LICENSE_KEY:?on-prem requires a license key — see LICENSE-OPS.md}
 
   gateway:
     image: ${FOLDFORGE_REGISTRY}/gateway:${FOLDFORGE_VERSION}
