@@ -1,0 +1,116 @@
+# FoldForge — on-prem control plane (customer-deployed, registry = customer Harbor).
+#
+# Delivery model B: images live in the CUSTOMER's internal registry (Harbor), NOT in
+# our GHCR. Every image is ${FOLDFORGE_REGISTRY}/<svc>:${FOLDFORGE_VERSION} — the
+# customer sets FOLDFORGE_REGISTRY to their Harbor project (e.g.
+# harbor.acme.internal/foldforge) and FOLDFORGE_VERSION to the released tag (e.g.
+# v0.1.0). No ":latest" — on-prem MUST pin a reproducible version.
+#
+# This is the CONTROL PLANE only (no GPU). The GPU sidecars deploy separately on GPU
+# nodes (see infra/compose/docker-compose.gpu.yml / RUNPOD-DEPLOY.md) and the
+# orchestrator points at them via FOLDFORGE_ORCH__SIDECAR_* — by default this file runs
+# the mock runner so the platform is demoable before GPU nodes exist.
+#
+# Install: see deploy/onprem/INSTALL.md. Push images to the customer Harbor first with
+# scripts/push-to-harbor.sh, then `docker compose -f docker-compose.onprem.yml up -d`.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-foldforge}
+    volumes:
+      - foldforge_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in .env}
+    volumes:
+      - foldforge_minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/$${R2_BUCKET:-foldforge} &&
+      echo 'bucket ready'"
+
+  orchestrator:
+    image: ${FOLDFORGE_REGISTRY:?set to your Harbor project, e.g. harbor.acme.internal/foldforge}/orchestrator:${FOLDFORGE_VERSION:?pin a released version, e.g. v0.1.0}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      FOLDFORGE_ORCH__DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-foldforge}
+      FOLDFORGE_ORCH__BIND_ADDR: 0.0.0.0:50051
+      # Mock by default (demoable with no GPU). Unset RUNNER + set the SIDECAR_* below
+      # to real GPU-node endpoints to switch to real inference.
+      FOLDFORGE_ORCH__RUNNER: ${FOLDFORGE_RUNNER:-mock}
+      FOLDFORGE_ORCH__SIDECAR_RFDIFFUSION: ${SIDECAR_RFDIFFUSION:-http://127.0.0.1:50061}
+      FOLDFORGE_ORCH__SIDECAR_PROTEINMPNN: ${SIDECAR_PROTEINMPNN:-http://127.0.0.1:50062}
+      FOLDFORGE_ORCH__SIDECAR_BOLTZ: ${SIDECAR_BOLTZ:-http://127.0.0.1:50063}
+      FOLDFORGE_ORCH__SIDECAR_AF2: ${SIDECAR_AF2:-http://127.0.0.1:50064}
+      FOLDFORGE_ORCH__R2_ENDPOINT: http://minio:9000
+      FOLDFORGE_ORCH__R2_REGION: ${R2_REGION:-auto}
+      FOLDFORGE_ORCH__R2_BUCKET: ${R2_BUCKET:-foldforge}
+      FOLDFORGE_ORCH__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      FOLDFORGE_ORCH__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+      FOLDFORGE_ORCH__BILLING_ENABLED: ${BILLING_ENABLED:-false}
+      FOLDFORGE_ORCH__PRICE_PER_STEP: ${PRICE_PER_STEP:-10}
+
+  gateway:
+    image: ${FOLDFORGE_REGISTRY}/gateway:${FOLDFORGE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      - orchestrator
+    environment:
+      FOLDFORGE_GATEWAY__BIND_ADDR: 0.0.0.0:8080
+      FOLDFORGE_GATEWAY__ORCHESTRATOR_ENDPOINT: http://orchestrator:50051
+      FOLDFORGE_GATEWAY__API_TOKEN: ${API_TOKEN:?set in .env}
+      FOLDFORGE_GATEWAY__API_KEYS_ENABLED: ${API_KEYS_ENABLED:-false}
+      FOLDFORGE_GATEWAY__R2_ENDPOINT: http://minio:9000
+      FOLDFORGE_GATEWAY__R2_REGION: ${R2_REGION:-auto}
+      FOLDFORGE_GATEWAY__R2_BUCKET: ${R2_BUCKET:-foldforge}
+      FOLDFORGE_GATEWAY__R2_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?set in .env}
+      FOLDFORGE_GATEWAY__R2_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in .env}
+    ports:
+      - "${GATEWAY_HOST_PORT:-18080}:8080"
+
+  console:
+    image: ${FOLDFORGE_REGISTRY}/console:${FOLDFORGE_VERSION}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: http://gateway:8080
+      GATEWAY_API_TOKEN: ${API_TOKEN:?set in .env}
+    ports:
+      - "${CONSOLE_HOST_PORT:-13000}:3000"
+
+volumes:
+  foldforge_pg:
+  foldforge_minio:
